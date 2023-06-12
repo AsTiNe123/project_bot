@@ -1,8 +1,11 @@
+from datetime import datetime
+
+
 class Person():
     def __init__(self):
         self.name = ''
 
-    def set_data(self, name: str, time_on: list, time_out: list):
+    def set_data(self, name: str, time_on: datetime, time_out: datetime):
         self.name, self.time_on, self.time_out = name, time_on, time_out
         self.score = 0
 
@@ -24,5 +27,5 @@ class Person():
     def change_time(self, time_on, time_out):
         self.time_on, self.time_out = time_on, time_out
     
-    def __eq__(self, other):
-        return self.name == other
+    def nole(self):
+        return self.name == ''
