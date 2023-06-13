@@ -1,6 +1,5 @@
 from aiogram import Bot, Dispatcher, types, executor
 
-from json import *
 
 from env import TOKEN
 
