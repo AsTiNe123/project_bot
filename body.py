@@ -1,73 +1,117 @@
 from aiogram import Bot, Dispatcher, types, executor
 
+import asyncio
+
+from contextlib import suppress
+
+from aiogram.utils.exceptions import MessageToEditNotFound, MessageCantBeEdited, MessageCantBeDeleted, MessageToDeleteNotFound
+
 from env import TOKEN
 
-import aioschedule 
-from apscheduler.schedulers.background import BackgroundScheduler
-
-import asyncio
+import scheduler
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from aiogram.contrib.fsm_storage.memory import MemoryStorage
 from aiogram.dispatcher import FSMContext
 
-import datetime
+from send_words import make, check, rules
 
-from send_words import make, check
-
-today_result = [0, 0, 0, 0, 0]
-
-mistake_words = []
-
-last_word = 'back off - отстраниться, пойти на попятный, отступить'
 
 COMAND = """
 /start
 /get_score
 /change_time
+/answer
+/rules
 """
 
-scheduler = BackgroundScheduler()
+scheduler = AsyncIOScheduler()
 
 bot = Bot(token= TOKEN)
 dp = Dispatcher(bot, storage = MemoryStorage())
-scheduler.add_job(make, trigger = "interval", args = [bot, ], )
+
+async def delete_message(message: types.Message, sleep_time: int = 0):
+    await asyncio.sleep(sleep_time)
+    with suppress(MessageCantBeDeleted, MessageToDeleteNotFound):
+        await message.delete()
+
+async def skipping_task(message: types.Message, sleep_time: int, state:FSMContext):
+    await asyncio.sleep(sleep_time)
+    with suppress(MessageCantBeDeleted, MessageToDeleteNotFound):
+        data = await state.get_data()
+        score = int(data['score'])-2
+        await state.update_data({'score' : score})
+        await message.edit_text("Ты пропустирл задание и из-за этого потерял 2 очка")
+
+async def start_scheduler(tt, state: FSMContext):
+    if not tt:
+        data = await state.get_data()
+        morning_time = data["morning_time"]
+        night_time = data["night_time"]
+        scheduler.add_job(scheduler_morning, 
+                          trigger = 'cron', 
+                          hour=morning_time.split(':')[0], 
+                          minute=morning_time.split(':')[1], 
+                          args= [state])
+        scheduler.add_job(send_words, 
+                          trigger = 'cron', 
+                          hour=f"{morning_time.split(':')[0]}-{night_time.split(':')[0]}", 
+                          minute=f"{int(morning_time.split(':')[1])+1}-{int(morning_time.split(':')[1])+10}", 
+                          args= [state])
+        scheduler.add_job(scheduler_night, 
+                          trigger = "cron", 
+                          hour=night_time.split(':')[0], 
+                          minute=night_time.split(':')[1],
+                          args= [state])
+        scheduler.start()
+        await state.update_data({tt : 1})
+
+
 
 async def scheduler_morning(state: FSMContext):
-    data = state.get_data()
-    if datetime.datetime.now() > data["time_on"]:
-        global today_result
-        list = aioschedule.every().day.do(make, last_word, mistake_words)
-        state.update_data({'today_words':list})
-        last_word = list[4]
-        today_result = [0, 0, 0, 0, 0]
+    data = await state.get_data()
+    list_of_words = make(str(data['last_word']),data['mistake_words'])
+    await state.update_data({'today_words':list_of_words})
+    await state.update_data({'last_word':list_of_words[4]})
+    await state.update_data({'today_result':[0, 0, 0, 0, 0]})
+
+async def send_words(state: FSMContext):
+    data = await state.get_data()
+    words = data["today_words"]
+    words = set(tuple(words))
+    await state.update_data({"today_words":words})
+    words_end = "Переведи слова:\n"
+    if data['state'] == 'Eng':
+        for i in words:
+            word = str(i.split(" - ")[0])
+            words_end = words_end + word + "\n"
+    else:
+        for i in words:
+            word = str(i.split(" - ")[1])
+            words_end = words_end + word + " - \n"
+    msg = await bot.send_message(data["chat_id"], words_end)
+    asyncio.create_task(skipping_task(msg, 45, state))
+    await state.update_data({'state': "Rus"})
 
 async def scheduler_night(state: FSMContext):
-    data = state.get_data()
-    h , m = map(int, data["time_out"].split(":"))
-    if data["time_out"]>15:
-        if datetime.datetime.now().time().hour >= h and datetime.datetime.now().time().minute >= m:
-            data = state.get_data()
-            for i in range(5):
-                if today_result[i] < 3:
-                    mistake_words += data["today_words"]
+    data = await state.get_data()
+    mistake_words = []
+    today_result = data["today_result"]
+    for i in range(5):
+        if today_result[i] < 3:
+            mistake_words.append(''.join(data["today_words"][i]))
     else:
-        if datetime.datetime.now().time().hour >= h and datetime.datetime.now().time().minute >= m and datetime.datetime.now().time()<15:
-            data = state.get_data()
-            for i in range(5):
-                if today_result[i] < 3:
-                    mistake_words += data["today_words"]
+        await state.update_data({'mistake_words':mistake_words})
 
-    
-async def scheduler(state: FSMContext):
-    data = state.get_data()
-    if datetime.datetime.now() > data["time_out"]:
-        list = aioschedule.every().day.do(make, bot, last_word)
-        state.update_data({'today_words':list})
-        last_word = list[4]
 
 @dp.message_handler(commands= ["help"], state= '*')
 async def echo(message: types.Message):
     await message.answer(text = COMAND)
+
+
+@dp.message_handler(commands= ["rules"], state= '*')
+async def echo(message: types.Message):
+    await rules(message)
 
 @dp.message_handler(commands= ["get_score"], state= '*')
 async def echo(message: types.Message, state: FSMContext):
@@ -83,56 +127,75 @@ async def echo(message: types.Message, state: FSMContext):
 async def echo(message: types.Message, state: FSMContext):
     await message.answer(text = "Привет это обычный бот, который обязательно поможет тебе выучить фразовые глаголы в английском языке.")
     await message.answer(text = "Во сколько ты примерно ложишса спать(например 22:00)")
-    await state.update_data({'user': message.from_user.full_name})
+    await state.update_data({'user': message.from_user.full_name, 'chat_id': message.from_user.id})
     await state.set_state("q1")
-    
+
+@dp.message_handler(commands=['answer'], state = 'q3')
+async def echo(message: types.Message, state: FSMContext):
+    message.delete()
+    msg = await message.answer("напиши свой перевод")
+    asyncio.create_task(delete_message(msg, 45))
+    await state.set_state("q4")
+
 
 @dp.message_handler(state= "q1")
 async def set_age(message: types.Message, state: FSMContext):
     time_out = message.text
-    try:
+    if ":" in time_out:
         await state.update_data({"night_time": time_out})
         await message.answer(text = "Теперь напиши время, когда ты просыпаешся(например 7:00)")
         await state.set_state("q2")
-    except Exception:
+    else:
         await message.answer(text = "Ты не правильно ввёл время(<i><b>ПРИМЕР</b></i> 7:00)", parse_mode = "HTML")
     
 @dp.message_handler(state= "q2")
 async def set_age(message: types.Message, state: FSMContext):
     time_on = str(message.text)
     data = await state.get_data()
-    try:
+    if ":" in time_on:
         await state.update_data({"morning_time": time_on})
         await message.answer(text = "Всё, ты закончил регистрацию")
         await state.set_state("q3")
         if 'score' not in data.keys():
             await state.update_data({"score": 0})
-    except Exception:
+        if 'tt' not in data.keys():
+            await state.update_data({'tt': 0})
+            await start_scheduler(0, state)
+        await state.update_data({'last_word':'0'})
+        await state.update_data({'today_result':[0, 0, 0, 0, 0]})
+        await state.update_data({'mistake_words':[]})
+        await state.update_data({'state':"Eng"})
+        await rules(message)
+    else:
         await message.answer(text = "Ты не правильно ввёл время(<i><b>ПРИМЕР</b></i> 22:00)", parse_mode = "HTML")
-    print(await state.get_data())
-
-@dp.message_handler(state = 'q3')
+    set
+@dp.message_handler(state = 'q4')
 async def echo(message: types.Message, state: FSMContext):
-    text = message.text.split('\n')
-    if text[0] == '':
-        global today_result
-        data = await state.get_data()
-        score = data["score"]
-        result = check()
-        for i in range(5):
-            res = result[i]
-            if i:
-                score+=1
-                today_result[i]+1
-            else:
-                score -= 1
+    print(134151)
+    answer = message.text.split('\n')
+    asyncio.create_task(delete_message(message, 45))
+    while len(answer)<5:
+        answer.append('-')
+    data = await state.get_data()
+    today_result = data["today_result"]
+    today_words = data["today_words"]
+    score = data["score"]
+    result = check(answer[:], today_words)
+    to_send = ''
+    for i in range(5):
+        res = result[i]
+        if res:
+            score+=1
+            today_result[i]+1
+            to_send += "правильно\n" 
+        else:
+            score -= 1
+            to_send += "неправильно\n" 
+    await state.update_data({"today_result": today_result})
+    await message.answer("ответ принят")
+    await message.answer("твои результаты:\n"+to_send)
+    await state.set_state("q3")
 
-
-
-
-
-
-
+    
 if __name__ == "__main__":
-    scheduler.start()
     executor.start_polling(dp, skip_updates=True)
