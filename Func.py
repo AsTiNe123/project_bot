@@ -20,11 +20,11 @@ def check(answers, today_words):
     if answer[0] not in liter:
         for i in range(5):
             word = today_words[i]
-            word = tuple(word.split(" - ")[1].split(", "))
-            answer = tuple(answers[i].split(", "))
-            
-            if set(word) == set(answer):
-                result.append(1)
+            answer = answers[i].split(", ")
+            for i in answer:
+                if i in word:
+                    result.append(1)
+                    break
             else:
                 result.append(0)
     else:
@@ -32,7 +32,6 @@ def check(answers, today_words):
             word = today_words[i]
             word = tuple(word.split(" - ")[0].split(", "))
             answer = tuple(answers[i].split(", "))
-            print(set(word), set(answer), sep = "rgwh")
             if set(word) == set(answer):
                 
                 result.append(1)
